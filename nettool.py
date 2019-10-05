@@ -1,10 +1,9 @@
 #!/usr/bin/python
 import argparse
-import sys
 import socket
-import threading
 import subprocess
-import select
+import sys
+import threading
 
 
 class Handler:
@@ -82,6 +81,7 @@ class Server:
             print("[*] Exception caught, shutting down")
             print(e)
         finally:
+            self.__socket.shutdown(socket.SHUT_RDWR)
             self.__socket.close()
 
     def __handle(self, client_conn, addr):
@@ -130,10 +130,13 @@ class Client:
                 if sent == 0:
                     print("[*] Collection closed")
                     break
+        except EOFError as e:
+            print('[*] End of file reached')
         except Exception as e:
             print('[*] Exception thrown')
             print(e)
         finally:
+            self.__socket.shutdown(socket.SHUT_RDWR)
             self.__socket.close()
 
 
