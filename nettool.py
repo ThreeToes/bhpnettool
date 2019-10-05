@@ -23,7 +23,7 @@ class EchoHandler(Handler):
         return False
 
 class CommandHandler(Handler):
-    __prompt = b'nettoolsh > '
+    __prompt = b'nettoolsh > \r\n'
     def init_connection(self, connection):
         connection.send(b'Call for papa Palpatine!\r\n')
         connection.send(self.__prompt)
@@ -35,6 +35,7 @@ class CommandHandler(Handler):
                 output = subprocess.check_output(msg, stderr=subprocess.STDOUT, shell=True)
                 print("[*] Output: {0}".format(output))
                 connection.send(output)
+                connection.send(b'\r\n')
             except Exception as e:
                 print("[*] Error trying to run command")
                 print(e)
@@ -66,6 +67,7 @@ class Server:
         self.__target = target
         self.__port = port
         self.__handlers = handlers
+        self.__stop = False
 
     def listen(self):
         print('[*] Listening on {0}:{1}'.format(self.__target, self.__port))
@@ -81,19 +83,20 @@ class Server:
             print("[*] Exception caught, shutting down")
             print(e)
         finally:
+            self.__stop = True
             self.__socket.shutdown(socket.SHUT_RDWR)
             self.__socket.close()
 
     def __handle(self, client_conn, addr):
         close = False
-        dataLen = 1
         for handler in self.__handlers:
             handler.init_connection(client_conn)
-        while not close and dataLen > 0:
+        while not close and not self.__stop:
             buffer = ""
-            while dataLen > 0:
+            data_len = 1
+            while data_len > 0:
                 data = client_conn.recv(1024)
-                dataLen = len(data)
+                data_len = len(data)
                 if data:
                     buffer += data.decode('utf-8')
                 else:
@@ -118,13 +121,15 @@ class Client:
         self.__target = target
         self.__port = port
         self.__socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.__readerThread = threading.Thread(target=self.__reader, args=())
+        self.__stop = False
 
     def run(self):
         try:
             self.__socket.connect((self.__target, self.__port))
-            while True:
-                t = input("> ")
-                print(t)
+            self.__readerThread.start()
+            while not self.__stop:
+                t = input()
                 msg = "{0}\r\n".format(t)
                 sent = self.__socket.send(bytes(msg, 'utf-8'))
                 if sent == 0:
@@ -136,8 +141,29 @@ class Client:
             print('[*] Exception thrown')
             print(e)
         finally:
+            self.__stop = True
             self.__socket.shutdown(socket.SHUT_RDWR)
             self.__socket.close()
+            self.__readerThread.join(100)
+
+    def __reader(self):
+        while not self.__stop:
+            try:
+                buffer = ""
+                dataLen = 1
+                while dataLen > 0:
+                    data = self.__socket.recv(1024)
+                    dataLen = len(data)
+                    if data:
+                        buffer += data.decode('utf-8')
+                    else:
+                        break
+                    if buffer.endswith("\r\n"):
+                        break
+                if len(buffer) > 0:
+                    print(buffer)
+            except Exception as e:
+                print("[*] Exception thrown: {0}".format(e))
 
 
 def parse_args():
