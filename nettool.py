@@ -4,6 +4,8 @@ import socket
 import subprocess
 import sys
 import threading
+import select
+
 
 
 class Handler:
@@ -19,7 +21,11 @@ class EchoHandler(Handler):
         connection.send(b'Echo enabled\r\n')
 
     def handle_msg(self, msg, connection):
-        connection.send(bytes("{0}\r\n".format(msg), 'utf-8'))
+        if len(msg) == 0:
+            return False
+        strmsg = msg.decode('utf-8')
+        strmsg.rstrip()
+        connection.send(bytes("{0}\r\n".format(strmsg), 'utf-8'))
         return False
 
 class CommandHandler(Handler):
@@ -30,9 +36,11 @@ class CommandHandler(Handler):
 
     def handle_msg(self, msg, connection):
         if len(msg) > 0:
-            print('[*] Running command "{0}"'.format(msg))
+            strmsg = msg.decode('utf-8')
+            strmsg.rstrip()
+            print('[*] Running command "{0}"'.format(strmsg))
             try:
-                output = subprocess.check_output(msg, stderr=subprocess.STDOUT, shell=True)
+                output = subprocess.check_output(strmsg, stderr=subprocess.STDOUT, shell=True)
                 print("[*] Output: {0}".format(output))
                 connection.send(output)
                 connection.send(b'\r\n')
@@ -91,29 +99,40 @@ class Server:
         close = False
         for handler in self.__handlers:
             handler.init_connection(client_conn)
-        while not close and not self.__stop:
-            buffer = ""
-            data_len = 1
-            while data_len > 0:
-                data = client_conn.recv(1024)
-                data_len = len(data)
-                if data:
-                    buffer += data.decode('utf-8')
-                else:
-                    break
-                if buffer.endswith("\r\n"):
-                    break
-            for handler in self.__handlers:
-                msg = buffer.rstrip()
-                try:
-                    close = handler.handle_msg(msg,client_conn)
-                    if close:
+        try:
+            while not close and not self.__stop:
+                data_len = 1
+                raw_buffer = bytearray()
+                while data_len > 0:
+                    (sock_ready,x,y) = select.select([client_conn],[],  [], 0.01)
+                    if len(sock_ready) == 0:
                         break
-                except Exception as e:
-                    print("[*] Caught an exception")
-                    print(e)
-        print("[*] Closing connection from {0}".format(addr))
-        client_conn.close()
+                    data = client_conn.recv(1028)
+                    data_len = len(data)
+                    if len(data) == 0 or data == b'\xff\xf4\xff\xfd\x06':
+                        # Connection was probably closed
+                        close = True
+                        break
+                    elif data:
+                        raw_buffer.extend(data)
+                    else:
+                        break
+                if len(raw_buffer) > 0:
+                    for handler in self.__handlers:
+                        try:
+                            close = handler.handle_msg(raw_buffer,client_conn)
+                            if close:
+                                break
+                        except Exception as e:
+                            print("[*] Caught an exception")
+                            print(e)
+
+        except BrokenPipeError as e:
+            print("[*] Connection closed")
+        finally:
+            print("[*] Closing connection from {0}".format(addr))
+            client_conn.shutdown(socket.SHUT_RDWR)
+            client_conn.close()
 
 
 class Client:
@@ -168,13 +187,13 @@ class Client:
 
 def parse_args():
     parser = argparse.ArgumentParser(prog='nettool.py',description='Connect to a TCP server or create a server on a port')
-    parser.add_argument('-t', '--target', dest='target', metavar='host', type=str, nargs=1)
-    parser.add_argument('-p', '--port', dest='port', metavar='port', type=int, nargs=1)
+    parser.add_argument('-t', '--target', dest='target', metavar='host', type=str)
+    parser.add_argument('-p', '--port', dest='port', metavar='port', type=int)
     parser.add_argument('-l', '--listen', dest='listen', action='store_true')
     parser.add_argument('-c', '--command', dest='command', action='store_true')
     parser.add_argument('-e', '--echo', dest='echo', action='store_true')
-    parser.add_argument('-u', '--upload', dest='upload', metavar='upload_location', type=str, nargs=1)
-    parser.set_defaults(listen=False, command=False, echo=False, upload=[], target=[], port=[])
+    parser.add_argument('-u', '--upload', dest='upload', metavar='upload_location', type=str)
+    parser.set_defaults(listen=False, command=False, echo=False)
     args = parser.parse_args(sys.argv[1:])
     arg_problems = arg_sanity_check(args)
     if len(arg_problems) > 0:
@@ -187,11 +206,11 @@ def parse_args():
 
 def arg_sanity_check(args):
     problems = []
-    if len(args.target) == 0:
+    if not args.target:
         problems.append("Target is required")
-    if len(args.port) == 0:
+    if not args.port:
         problems.append("Port is required")
-    if args.command and len(args.upload) > 0:
+    if args.command and args.upload:
         problems.append("Can't have an upload server and a command server at the same time")
     return problems
 
@@ -204,9 +223,9 @@ def main():
             handlers.append(CommandHandler())
         if args.echo:
             handlers.append(EchoHandler())
-        if len(args.upload) > 0:
+        if args.upload:
             handlers.append(UploadHandler(args.upload[0]))
-        s = Server(args.target[0], args.port[0], handlers)
+        s = Server(args.target, args.port, handlers)
         s.listen()
     if not args.listen:
         client = Client(args.target[0], args.port[0])
