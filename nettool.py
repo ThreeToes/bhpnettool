@@ -5,7 +5,8 @@ import subprocess
 import sys
 import threading
 import select
-
+import os
+import signal
 
 
 class Handler:
@@ -79,6 +80,7 @@ class Server:
 
     def listen(self):
         print('[*] Listening on {0}:{1}'.format(self.__target, self.__port))
+        self.__socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self.__socket.bind((self.__target, self.__port))
         self.__socket.listen(5)
         try:
@@ -90,6 +92,8 @@ class Server:
         except Exception as e:
             print("[*] Exception caught, shutting down")
             print(e)
+        except KeyboardInterrupt as e:
+            print("[!!] Server was interupted. Shutting down")
         finally:
             self.__stop = True
             self.__socket.shutdown(socket.SHUT_RDWR)
@@ -142,6 +146,7 @@ class Client:
         self.__socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.__readerThread = threading.Thread(target=self.__reader, args=())
         self.__stop = False
+        self.__target_disconnect = False
 
     def run(self):
         try:
@@ -156,14 +161,17 @@ class Client:
                     break
         except EOFError as e:
             print('[*] End of file reached')
+        except InterruptedError as e:
+            print('[*] Interrupted. Exiting')
         except Exception as e:
             print('[*] Exception thrown')
             print(e)
         finally:
-            self.__stop = True
-            self.__socket.shutdown(socket.SHUT_RDWR)
-            self.__socket.close()
-            self.__readerThread.join(100)
+            if not self.__target_disconnect:
+                self.__stop = True
+                self.__socket.shutdown(socket.SHUT_RDWR)
+                self.__socket.close()
+                self.__readerThread.join(100)
 
     def __reader(self):
         while not self.__stop:
@@ -171,28 +179,43 @@ class Client:
                 buffer = ""
                 dataLen = 1
                 while dataLen > 0:
+                    (readylist, x, y) = select.select([self.__socket], [], [], 0.01)
+                    if len(readylist) == 0:
+                        # Target is probably done writing
+                        break
                     data = self.__socket.recv(1024)
-                    dataLen = len(data)
-                    if data:
+                    if len(data) == 0 or data == b'\xff\xf4\xff\xfd\x06':
+                        # Socket closed
+                        self.__stop = True
+                        self.__target_disconnect = True
+                        break
+                    elif data:
                         buffer += data.decode('utf-8')
                     else:
-                        break
-                    if buffer.endswith("\r\n"):
                         break
                 if len(buffer) > 0:
                     print(buffer)
             except Exception as e:
                 print("[*] Exception thrown: {0}".format(e))
-
+        if self.__target_disconnect:
+            print("[!!] Target machine shut down")
+            # Interrupt the input
+            os.kill(os.getpid(), signal.SIGINT)
 
 def parse_args():
     parser = argparse.ArgumentParser(prog='nettool.py',description='Connect to a TCP server or create a server on a port')
-    parser.add_argument('-t', '--target', dest='target', metavar='host', type=str)
-    parser.add_argument('-p', '--port', dest='port', metavar='port', type=int)
-    parser.add_argument('-l', '--listen', dest='listen', action='store_true')
-    parser.add_argument('-c', '--command', dest='command', action='store_true')
-    parser.add_argument('-e', '--echo', dest='echo', action='store_true')
-    parser.add_argument('-u', '--upload', dest='upload', metavar='upload_location', type=str)
+    parser.add_argument('-t', '--target', dest='target', metavar='host', type=str,
+                        help='IP target or address to bind to')
+    parser.add_argument('-p', '--port', dest='port', metavar='port', type=int,
+                        help='Target port or port to bind to')
+    parser.add_argument('-l', '--listen', dest='listen', action='store_true',
+                        help='Initialise a listener on {target}:{port}')
+    parser.add_argument('-c', '--command', dest='command', action='store_true',
+                        help='Attach a command listener to a server. Cannot be used with -u')
+    parser.add_argument('-e', '--echo', dest='echo', action='store_true',
+                        help='Attach an echo listener to a server')
+    parser.add_argument('-u', '--upload', dest='upload', metavar='upload_location', type=str,
+                        help='Start an upload server and upload to {upload_location}. Cannot be used with -c')
     parser.set_defaults(listen=False, command=False, echo=False)
     args = parser.parse_args(sys.argv[1:])
     arg_problems = arg_sanity_check(args)
@@ -224,11 +247,11 @@ def main():
         if args.echo:
             handlers.append(EchoHandler())
         if args.upload:
-            handlers.append(UploadHandler(args.upload[0]))
+            handlers.append(UploadHandler(args.upload))
         s = Server(args.target, args.port, handlers)
         s.listen()
     if not args.listen:
-        client = Client(args.target[0], args.port[0])
+        client = Client(args.target, args.port)
         client.run()
 
 
@@ -236,4 +259,5 @@ if __name__ == '__main__':
     try:
         main()
     except KeyboardInterrupt:
-        print("[*] Keyboard interrupt caught. Shutting down")
+        # Just eat this, don't need a stack trace
+        pass
