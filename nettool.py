@@ -121,14 +121,12 @@ class Server:
             handler.init_connection(client_conn)
         try:
             while not close and not self.__stop:
-                data_len = 1
                 raw_buffer = bytearray()
-                while data_len > 0:
+                while True:
                     (sock_ready,x,y) = select.select([client_conn],[],  [], 0.01)
                     if len(sock_ready) == 0:
                         break
                     data = client_conn.recv(1028)
-                    data_len = len(data)
                     if len(data) == 0 or data == b'\xff\xf4\xff\xfd\x06':
                         # Connection was probably closed
                         close = True
@@ -193,8 +191,7 @@ class Client:
         while not self.__stop:
             try:
                 buffer = ""
-                dataLen = 1
-                while dataLen > 0:
+                while True:
                     (readylist, x, y) = select.select([self.__socket], [], [], 0.01)
                     if len(readylist) == 0:
                         # Target is probably done writing
