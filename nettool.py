@@ -46,15 +46,15 @@ class EchoHandler(Handler):
         return False
 
 class CommandHandler(Handler):
-    __prompt = b'nettoolsh > \r\n'
+    __prompt = b'nettoolsh > '
     def init_connection(self, connection):
         connection.send(b'Call for papa Palpatine!\r\n')
         connection.send(self.__prompt)
 
     def handle_msg(self, msg, connection):
         if len(msg) > 0:
-            strmsg = msg.decode('utf-8')
-            strmsg.rstrip()
+            strmsg = msg.decode('utf-8').strip()
+
             print('[*] Running command "{0}"'.format(strmsg))
             try:
                 output = subprocess.check_output(strmsg, stderr=subprocess.STDOUT, shell=True)
